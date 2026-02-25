@@ -222,30 +222,56 @@ def change_password(request):
     
 
 @api_view(['POST'])
-def social_signup_signup(request):
+def verify_social_signup_signin_otp(request):
     email = request.data.get('email')
-    auth_provider = request.data.get('auth_provider')
-    if not email or not auth_provider:
-        return Response({'error': 'Please provide all the required fields'}, status=400)
-    
-    if User.objects.filter(username=email).exists():
-        return Response({'error': 'User with this email already exists'}, status=400)
+    otp = request.data.get('otp')
 
-    user, created = User.objects.get_or_create(username=email, defaults={'email': email})
-    profile, _ = Profile.objects.get_or_create(user=user)
-    
-    if created:
-        
-        refresh = RefreshToken.for_user(user)
-        access_token = refresh.access_token
-        
-        return Response({
-            'message': 'Successfully authenticated.',
-            'access_token': str(access_token),
-            'refresh_token': str(refresh),
-            'email': user.email,
-            'profile_data': ProfileSerializer(profile).data,
-        }, status=status.HTTP_201_CREATED if created else status.HTTP_200_OK)
+    if not email or not otp:
+        return Response(
+            {"error": "Email and OTP are required."},
+            status=status.HTTP_400_BAD_REQUEST
+        )
+
+    email = email.strip().lower()
+    otp = str(otp).strip()
+
+    try:
+        user = User.objects.select_related("profile").get(username=email)
+        profile = user.profile
+    except User.DoesNotExist:
+        return Response({"error": "User does not exist."}, status=status.HTTP_404_NOT_FOUND)
+    except Profile.DoesNotExist:
+        return Response({"error": "Profile does not exist."}, status=status.HTTP_404_NOT_FOUND)
+
+    # Must have an OTP stored
+    if not profile.otp:
+        return Response(
+            {"error": "No OTP found. Please request a new OTP."},
+            status=status.HTTP_400_BAD_REQUEST
+        )
+
+    # Verify OTP
+    if profile.otp != otp:
+        return Response({"error": "Invalid OTP."}, status=status.HTTP_400_BAD_REQUEST)
+
+    # OTP correct ✅
+    # If user is not active -> activate
+    if not user.is_active:
+        user.is_active = True
+        user.save(update_fields=["is_active"])
+
+    # Clear OTP so it can't be reused
+    profile.otp = None
+    profile.save(update_fields=["otp"])
+
+    refresh = RefreshToken.for_user(user)
+
+    return Response({
+        "message": "OTP verified successfully.",
+        "refresh_token": str(refresh),
+        "access_token": str(refresh.access_token),
+        "profile_data": ProfileSerializer(profile).data,
+    }, status=status.HTTP_200_OK)
     
 
 @api_view(['PATCH'])
